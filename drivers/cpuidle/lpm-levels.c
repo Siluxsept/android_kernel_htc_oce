@@ -323,17 +323,6 @@ static void update_debug_pc_event(enum debug_event event, uint32_t arg1,
 	spin_unlock(&debug_lock);
 }
 
-static void setup_broadcast_timer(void *arg)
-{
-	unsigned long reason = (unsigned long)arg;
-	int cpu = raw_smp_processor_id();
-
-	reason = reason ?
-		CLOCK_EVT_NOTIFY_BROADCAST_ON : CLOCK_EVT_NOTIFY_BROADCAST_OFF;
-
-	clockevents_notify(reason, &cpu);
-}
-
 static int lpm_cpu_callback(struct notifier_block *cpu_nb,
 	unsigned long action, void *hcpu)
 {
@@ -348,10 +337,6 @@ static int lpm_cpu_callback(struct notifier_block *cpu_nb,
 	case CPU_STARTING:
 		cluster_unprepare(cluster, get_cpu_mask((unsigned int) cpu),
 					NR_LPM_LEVELS, false, 0);
-		break;
-	case CPU_ONLINE:
-		smp_call_function_single(cpu, setup_broadcast_timer,
-					(void *)true, 1);
 		break;
 	default:
 		break;
@@ -531,7 +516,6 @@ static uint64_t get_cluster_sleep_time(struct lpm_cluster *cluster,
 	int cpu;
 	int next_cpu = raw_smp_processor_id();
 	ktime_t next_event;
-	struct tick_device *td;
 	struct cpumask online_cpus_in_cluster;
 
 	next_event.tv64 = KTIME_MAX;
@@ -550,9 +534,11 @@ static uint64_t get_cluster_sleep_time(struct lpm_cluster *cluster,
 			&cluster->num_children_in_sync, cpu_online_mask);
 
 	for_each_cpu(cpu, &online_cpus_in_cluster) {
-		td = &per_cpu(tick_cpu_device, cpu);
-		if (td->evtdev->next_event.tv64 < next_event.tv64) {
-			next_event.tv64 = td->evtdev->next_event.tv64;
+		ktime_t *next_event_c;
+
+		next_event_c = get_next_event_cpu(cpu);
+		if (next_event_c->tv64 < next_event.tv64) {
+			next_event.tv64 = next_event_c->tv64;
 			next_cpu = cpu;
 		}
 	}
@@ -835,7 +821,6 @@ static inline void cpu_prepare(struct lpm_cluster *cluster, int cpu_index,
 				bool from_idle)
 {
 	struct lpm_cpu_level *cpu_level = &cluster->cpu->levels[cpu_index];
-	unsigned int cpu = raw_smp_processor_id();
 	bool jtag_save_restore =
 			cluster->cpu->levels[cpu_index].jtag_save_restore;
 
@@ -851,7 +836,7 @@ static inline void cpu_prepare(struct lpm_cluster *cluster, int cpu_index,
 	 */
 	if (from_idle && (cpu_level->use_bc_timer ||
 			(cpu_index >= cluster->min_child_level)))
-		clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_ENTER, &cpu);
+		tick_broadcast_enter();
 
 	if (from_idle && ((cpu_level->mode == MSM_PM_SLEEP_MODE_POWER_COLLAPSE)
 		|| (cpu_level->mode ==
@@ -870,13 +855,12 @@ static inline void cpu_unprepare(struct lpm_cluster *cluster, int cpu_index,
 				bool from_idle)
 {
 	struct lpm_cpu_level *cpu_level = &cluster->cpu->levels[cpu_index];
-	unsigned int cpu = raw_smp_processor_id();
 	bool jtag_save_restore =
 			cluster->cpu->levels[cpu_index].jtag_save_restore;
 
 	if (from_idle && (cpu_level->use_bc_timer ||
 			(cpu_index >= cluster->min_child_level)))
-		clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_EXIT, &cpu);
+		tick_broadcast_exit();
 
 	if (from_idle && ((cpu_level->mode == MSM_PM_SLEEP_MODE_POWER_COLLAPSE)
 		|| (cpu_level->mode ==
@@ -987,6 +971,7 @@ EXPORT_SYMBOL(free_pmic_reg_buffer);
 #endif
 
 #if !defined(CONFIG_CPU_V7)
+#include <asm/cpuidle.h>
 asmlinkage int __invoke_psci_fn_smc(u64, u64, u64, u64);
 #ifdef CONFIG_HTC_DEBUG_FOOTPRINT
 bool psci_enter_sleep(struct lpm_cluster *cluster, int idx, bool from_idle, bool notify_rpm)
@@ -1492,9 +1477,7 @@ static int lpm_probe(struct platform_device *pdev)
 	 * core.  BUG in existing code but no known issues possibly because of
 	 * how late lpm_levels gets initialized.
 	 */
-	get_cpu();
-	on_each_cpu(setup_broadcast_timer, (void *)true, 1);
-	put_cpu();
+	register_hotcpu_notifier(&lpm_cpu_nblk);
 	suspend_set_ops(&lpm_suspend_ops);
 	hrtimer_init(&lpm_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
@@ -1518,7 +1501,6 @@ static int lpm_probe(struct platform_device *pdev)
 				__func__);
 		goto failed;
 	}
-	register_hotcpu_notifier(&lpm_cpu_nblk);
 	module_kobj = kset_find_obj(module_kset, KBUILD_MODNAME);
 	if (!module_kobj) {
 		pr_err("%s: cannot find kobject for module %s\n",
@@ -1675,5 +1657,4 @@ void lpm_cpu_hotplug_enter(unsigned int cpu)
 
 	msm_cpu_pm_enter_sleep(mode, false);
 }
-
 
