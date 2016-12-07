@@ -3345,9 +3345,8 @@ static int estimate_battery_age(struct fg_chip *chip, int *actual_capacity)
   }
 
   battery_soc = get_battery_soc_raw(chip) * 100 / FULL_PERCENT_3B;
-  if (rc) {
-      goto error_done;
-  } else if (battery_soc < 25 || battery_soc > 75) {
+  if (battery_soc < 25 || battery_soc > 75) {
+
       if (fg_debug_mask & FG_AGING)
           pr_info("Battery SoC (%d) out of range, aborting\n",
                   (int)battery_soc);
@@ -3415,7 +3414,6 @@ static int estimate_battery_age(struct fg_chip *chip, int *actual_capacity)
               chip->nom_cap_uah, *actual_capacity);
 
   return rc;
-
 error_done:
   pr_err("some register reads failed: %d\n", rc);
 done:
@@ -8829,7 +8827,6 @@ out:
 static int fg_memif_init(struct fg_chip *chip)
 {
 	int rc;
-	u8 dig_major;
 
 	rc = fg_read(chip, chip->revision, chip->mem_base + DIG_MINOR, 4);
 	if (rc) {
@@ -8847,7 +8844,7 @@ static int fg_memif_init(struct fg_chip *chip)
 		chip->ima_supported = true;
 		break;
 	default:
-		pr_err("Digital Major rev=%d not supported\n", dig_major);
+		pr_err("Digital Major rev=%d not supported\n", chip->revision[DIG_MAJOR]);
 		return -EINVAL;
 	}
 
