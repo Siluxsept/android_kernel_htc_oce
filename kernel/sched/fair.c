@@ -31,6 +31,7 @@
 #include <linux/migrate.h>
 #include <linux/task_work.h>
 #include <linux/module.h>
+#include <linux/display_state.h>
 
 #include <trace/events/sched.h>
 
@@ -5819,8 +5820,9 @@ schedtune_task_margin(struct task_struct *p)
     int boost = schedtune_task_boost(p);
     unsigned long util;
     long margin;
-    
-    if (boost == 0)
+	const bool display_on = is_display_on();
+
+	if (boost == 0 || !display_on)
         return 0;
     
     util = task_util(p);

@@ -6,6 +6,7 @@
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
 #include <linux/list.h>
+#include <linux/display_state.h>
 
 #include <trace/events/sched.h>
 
@@ -1370,6 +1371,7 @@ schedtune_add_cluster_nrg(
 		}
 	}
 }
+
 
 /*
  * Initialize the constants required to compute normalized energy.
