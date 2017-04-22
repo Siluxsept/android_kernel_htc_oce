@@ -132,14 +132,13 @@ static void pwrgov_update_commit(struct pwrgov_policy *sg_policy, u64 time,
 	if (pwrgov_up_down_rate_limit(sg_policy, time, next_freq))
 		return;
 
-	sg_policy->last_freq_update_time = time;
-
 	if (policy->fast_switch_enabled) {
 		if (sg_policy->next_freq == next_freq) {
 			trace_cpu_frequency(policy->cur, smp_processor_id());
 			return;
 		}
 		sg_policy->next_freq = next_freq;
+		sg_policy->last_freq_update_time = time;
 		next_freq = cpufreq_driver_fast_switch(policy, next_freq);
 		if (next_freq == CPUFREQ_ENTRY_INVALID)
 			return;
@@ -148,6 +147,7 @@ static void pwrgov_update_commit(struct pwrgov_policy *sg_policy, u64 time,
 		trace_cpu_frequency(next_freq, smp_processor_id());
 	} else if (sg_policy->next_freq != next_freq) {
 		sg_policy->next_freq = next_freq;
+		sg_policy->last_freq_update_time = time;
 		sg_policy->work_in_progress = true;
 		irq_work_queue(&sg_policy->irq_work);
 	}
@@ -158,27 +158,7 @@ static void pwrgov_update_commit(struct pwrgov_policy *sg_policy, u64 time,
  * @sg_cpu: pwrutilx cpu object to compute the new frequency for.
  * @util: Current CPU utilization.
  * @max: CPU capacity.
- * @display_on: API to check if display is currently on.
  *
- * If the utilization is frequency-invariant, choose the new frequency to be
- * proportional to it, that is
- *
- * next_freq = C * max_freq * util / max
- *
- * Otherwise, approximate the would-be frequency-invariant utilization by
- * util_raw * (curr_freq / max_freq) which leads to
- *
- * next_freq = C * curr_freq * util_raw / max
- *
- * Take C = 1.25 for the frequency tipping point at (util / max) = 0.80.
- *
- * The lowest driver-supported frequency which is equal or greater than the raw
- * next_freq (as calculated above) is returned, subject to policy min/max and
- * cpufreq driver limitations.
- * 
- * For the big cluster, choose the new frequency to be exactly right according
- * to current util.
- * 
  * If the utilization is frequency-invariant, choose the new frequency to be
  * proportional to it, that is
  *
@@ -188,42 +168,24 @@ static void pwrgov_update_commit(struct pwrgov_policy *sg_policy, u64 time,
  * util_raw * (curr_freq / max_freq) which leads to
  *
  * next_freq = curr_freq * util_raw / max
- * 
- * If the device's screen turns off, apply these rules:
- * 
- * Little cluster will use next_freq = freq * util / max
- * 
- * Big cluster will be capped at minimum frequency
- * 
- * Capping the frequency to minimum rather than turning off cores
- * is better for latency when tasks are being migrated.
+ *
+ * The lowest driver-supported frequency which is equal or greater than the raw
+ * next_freq (as calculated above) is returned, subject to policy min/max and
+ * cpufreq driver limitations.
  */
 static unsigned int get_next_freq(struct pwrgov_cpu *sg_cpu, unsigned long util,
 				  unsigned long max)
 {
 	struct pwrgov_policy *sg_policy = sg_cpu->sg_policy;
 	struct cpufreq_policy *policy = sg_policy->policy;
-	struct pwrgov_tunables *tunables = sg_policy->tunables;
 	unsigned int freq = arch_scale_freq_invariant() ?
-				policy->max : policy->cur;
-	const bool display_on = is_display_on();
-	
-	if(policy->cpu < 2) {
-		if(display_on)
-			freq = (freq + (freq >> 2)) * util / max;
-		else
-			freq = freq * util / max;
-	} else {
-		if(display_on)
-			freq = freq * util / max;
-		else
-			return policy->min;
-	}
+				policy->cpuinfo.max_freq : policy->cur;
+				
+	freq = freq * util / max;
 
 	if (freq == sg_cpu->cached_raw_freq && sg_policy->next_freq != UINT_MAX)
 		return sg_policy->next_freq;
 	sg_cpu->cached_raw_freq = freq;
-	
 	return cpufreq_driver_resolve_freq(policy, freq);
 }
 
@@ -255,6 +217,7 @@ static void pwrgov_get_util(unsigned long *util, unsigned long *max, u64 time)
 	*util = boosted_cpu_util(cpu);
 	if (likely(use_pelt()))
 		*util = min((*util + rt), max_cap);
+
 	*max = max_cap;
 }
 
@@ -288,54 +251,6 @@ static void pwrgov_iowait_boost(struct pwrgov_cpu *sg_cpu, unsigned long *util,
 	sg_cpu->iowait_boost >>= 1;
 }
 
-#ifdef CONFIG_CAPACITY_CLAMPING
-
-static inline
-void cap_clamp_cpu_range(unsigned int cpu, unsigned int *cap_min,
-			 unsigned int *cap_max)
-{
-	struct cap_clamp_cpu *cgc;
-
-	*cap_min = 0;
-	cgc = &cpu_rq(cpu)->cap_clamp_cpu[CAP_CLAMP_MIN];
-	if (cgc->node)
-		*cap_min = cgc->value;
-
-	*cap_max = SCHED_CAPACITY_SCALE;
-	cgc = &cpu_rq(cpu)->cap_clamp_cpu[CAP_CLAMP_MAX];
-	if (cgc->node)
-		*cap_max = cgc->value;
-}
-
-static inline
-unsigned int cap_clamp_cpu_util(unsigned int cpu, unsigned int util)
-{
-	unsigned int cap_max, cap_min;
-
-	cap_clamp_cpu_range(cpu, &cap_min, &cap_max);
-	return clamp(util, cap_min, cap_max);
-}
-
-static inline
-void cap_clamp_compose(unsigned int *cap_min, unsigned int *cap_max,
-		       unsigned int j_cap_min, unsigned int j_cap_max)
-{
-	*cap_min = max(*cap_min, j_cap_min);
-	*cap_max = max(*cap_max, j_cap_max);
-}
-
-#define cap_clamp_util_range(util, cap_min, cap_max) \
-	clamp_t(typeof(util), util, cap_min, cap_max)
-
-#else
-
-#define cap_clamp_cpu_range(cpu, cap_min, cap_max) { }
-#define cap_clamp_cpu_util(cpu, util) util
-#define cap_clamp_compose(cap_min, cap_max, j_cap_min, j_cap_max) { }
-#define cap_clamp_util_range(util, cap_min, cap_max) util
-
-#endif /* CONFIG_CAPACITY_CLAMPING */
-
 static void pwrgov_update_single(struct update_util_data *hook, u64 time,
 				unsigned int flags)
 {
@@ -352,13 +267,10 @@ static void pwrgov_update_single(struct update_util_data *hook, u64 time,
 		return;
 
 	if (flags & SCHED_CPUFREQ_DL) {
-		util = cap_clamp_cpu_util(smp_processor_id(),
-					  SCHED_CAPACITY_SCALE);
-		next_f = get_next_freq(sg_cpu, util, policy->cpuinfo.max_freq);
+		next_f = policy->cpuinfo.max_freq;
 	} else {
 		pwrgov_get_util(&util, &max, time);
 		pwrgov_iowait_boost(sg_cpu, &util, &max);
-		util = cap_clamp_cpu_util(smp_processor_id(), util);
 		next_f = get_next_freq(sg_cpu, util, max);
 	}
 	pwrgov_update_commit(sg_policy, time, next_f);
@@ -370,20 +282,18 @@ static unsigned int pwrgov_next_freq_shared(struct pwrgov_cpu *sg_cpu,
 {
 	struct pwrgov_policy *sg_policy = sg_cpu->sg_policy;
 	struct cpufreq_policy *policy = sg_policy->policy;
+	unsigned int max_f = policy->cpuinfo.max_freq;
 	u64 last_freq_update_time = sg_policy->last_freq_update_time;
-	unsigned int cap_max = SCHED_CAPACITY_SCALE;
-	unsigned int cap_min = 0;
 	unsigned int j;
 
-	pwrgov_iowait_boost(sg_cpu, &util, &max);
+	if (flags & SCHED_CPUFREQ_DL)
+		return max_f;
 
-	/* Initialize clamping range based on caller CPU constraints */
-	cap_clamp_cpu_range(smp_processor_id(), &cap_min, &cap_max);
+	pwrgov_iowait_boost(sg_cpu, &util, &max);
 
 	for_each_cpu(j, policy->cpus) {
 		struct pwrgov_cpu *j_sg_cpu;
 		unsigned long j_util, j_max;
-		unsigned int j_cap_max, j_cap_min;
 		s64 delta_ns;
 
 		if (j == smp_processor_id())
@@ -403,9 +313,9 @@ static unsigned int pwrgov_next_freq_shared(struct pwrgov_cpu *sg_cpu,
 			continue;
 		}
 		if (j_sg_cpu->flags & SCHED_CPUFREQ_DL)
-			j_util = cap_clamp_cpu_util(j, SCHED_CAPACITY_SCALE);
-		else
-			j_util = j_sg_cpu->util;
+			return max_f;
+
+		j_util = j_sg_cpu->util;
 		j_max = j_sg_cpu->max;
 		if (j_util * max > j_max * util) {
 			util = j_util;
@@ -413,21 +323,8 @@ static unsigned int pwrgov_next_freq_shared(struct pwrgov_cpu *sg_cpu,
 		}
 
 		pwrgov_iowait_boost(j_sg_cpu, &util, &max);
-
-		/*
-		 * Update clamping range based on this CPU constraints, but
-		 * only if this CPU is not currently idle. Idle CPUs do not
-		 * enforce constraints in a shared frequency domain.
-		 */
-		if (!idle_cpu(j)) {
-			cap_clamp_cpu_range(j, &j_cap_min, &j_cap_max);
-			cap_clamp_compose(&cap_min, &cap_max,
-					  j_cap_min, j_cap_max);
-		}
 	}
 
-	/* Clamp utilization on aggregated CPUs ranges */
-	util = cap_clamp_util_range(util, cap_min, cap_max);
 	return get_next_freq(sg_cpu, util, max);
 }
 
@@ -709,7 +606,6 @@ static void get_tunables_data(struct pwrgov_tunables *tunables,
 initialize:
 	tunables->up_rate_limit_us = LATENCY_MULTIPLIER;
 	tunables->down_rate_limit_us = LATENCY_MULTIPLIER;
-		
 	lat = policy->cpuinfo.transition_latency / NSEC_PER_USEC;
 	if (lat) {
 		tunables->up_rate_limit_us *= lat;
