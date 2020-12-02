@@ -336,7 +336,7 @@ struct qseecom_client_send_fsm_key_req {
 
 struct qseecom_continue_blocked_request_ireq {
 	uint32_t qsee_cmd_id;
-	uint32_t app_or_session_id; /*legacy: app_id; smcinvoke: session_id*/
+	uint32_t app_id;
 } __attribute__((__packed__));
 
 /**********      ARMV8 SMC INTERFACE TZ MACRO     *******************/
