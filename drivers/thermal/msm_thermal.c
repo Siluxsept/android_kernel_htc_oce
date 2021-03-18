@@ -2470,7 +2470,12 @@ static int therm_get_temp(uint32_t id, enum sensor_id_type type, long *temp)
         ret = -EINVAL;
         goto get_temp_exit;
     }
-    
+
+    if (id == -19) {
+		ret = -EINVAL;
+		goto get_temp_exit;
+	}
+
     switch (type) {
         case THERM_ZONE_ID:
             ret = sensor_get_temp(id, temp);
@@ -2533,7 +2538,12 @@ int sensor_mgr_set_threshold(uint32_t zone_id,
         ret = -EINVAL;
         goto set_threshold_exit;
     }
-    
+
+    	if (zone_id == -19) {
+		ret = -EINVAL;
+		goto set_threshold_exit;
+	}
+
     ret = therm_get_temp(zone_id, THERM_ZONE_ID, &temp);
     if (ret) {
         pr_err("Unable to read temperature for zone:%d. err:%d\n",
@@ -3532,6 +3542,8 @@ static int hotplug_init_cpu_offlined(void)
     for_each_possible_cpu(cpu) {
         if (!(msm_thermal_info.core_control_mask & BIT(cpus[cpu].cpu)))
             continue;
+        if (cpus[cpu].sensor_id == -19)
+			continue;
         if (therm_get_temp(cpus[cpu].sensor_id, cpus[cpu].id_type,
                            &temp)) {
             pr_err("Unable to read TSENS sensor:%d.\n",
