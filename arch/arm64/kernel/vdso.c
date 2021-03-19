@@ -170,6 +170,7 @@ static int __init vdso_mappings_init(const char *name,
 {
 	unsigned long i, vdso_pages;
 	struct page **vdso_pagelist;
+    unsigned long pfn;
 
 	if (memcmp(code_start, "\177ELF", 4)) {
 		pr_err("%s is not a valid ELF object!\n", name);
@@ -196,8 +197,10 @@ static int __init vdso_mappings_init(const char *name,
 	vdso_pagelist[0] = virt_to_page(vdso_data);
 
 	/* Grab the vDSO code pages. */
+	pfn = sym_to_pfn(code_start);
+
 	for (i = 0; i < vdso_pages; i++)
-		vdso_pagelist[i + 1] = virt_to_page(&code_start + i * PAGE_SIZE);
+		vdso_pagelist[i + 1] = pfn_to_page(pfn + i);
 
 	/* Populate the special mapping structures */
 	mappings->data_mapping = (struct vm_special_mapping) {
