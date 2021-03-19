@@ -705,6 +705,7 @@ ifdef CONFIG_KCOV
              -fsanitize-coverage=trace-pc is not supported by compiler)
     CFLAGS_KCOV =
   endif
+endif
 
 ifeq ($(cc-name),clang)
 KBUILD_CPPFLAGS += -Qunused-arguments
